@@ -90,20 +90,29 @@ client.SetCallbacks(
     [](MQTTAsync_token token) { std::cout << "delivered " << token << "\n"; });
 
 PMPC::AsyncConnectOptions opt(
-    [](MQTTAsync_successData*) { /* 成功 */ },
+    /* 连接成功 -- 已收到 CONNACK，会话已建立：在这里订阅 */
+    [&client](MQTTAsync_successData*) { client.Subscribe("my/topic/#", 1); },
     [](MQTTAsync_failureData* f) { /* 失败 */ });
 
 opt.SetAutomaticReconnect(true);
 opt.SetKeepAliveInterval(30);
 
-if (client.Connect(opt) == MQTTASYNC_SUCCESS) {
-    client.Subscribe("my/topic/#", 1);
-
-    PMPC::AsyncMessage msg;
-    msg.SetQOS(1);
-    msg.SetPayload(buffer, len);
-    client.PublishMessage("my/topic", msg);
+///注意：Connect() 返回 SUCCESS 只表示 CONNECT 命令已入队，握手尚未完成。
+///紧跟着调用 Subscribe() 会返回 MQTTASYNC_DISCONNECTED（若忽略返回值，
+///订阅会被静默丢弃）。应在 onSuccess 回调中订阅，或使用 SetConnected
+///回调--它还能覆盖自动重连后的重新订阅
+if (client.Connect(opt) != MQTTASYNC_SUCCESS) {
+    /* 同步失败：参数非法、已有连接流程在进行中…… */
 }
+```
+
+连接建立后（例如在上面 onSuccess 回调里，或 SetConnected 触发后）即可发布：
+
+```cpp
+PMPC::AsyncMessage msg;
+msg.SetQOS(1);
+msg.SetPayload(buffer, len);
+client.PublishMessage("my/topic", msg);
 ```
 
 完整交互式示例（连接 / 断开 / 订阅 / 发布 的控制台循环）见 [`test/main.cpp`](test/main.cpp)。

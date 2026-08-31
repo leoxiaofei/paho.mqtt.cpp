@@ -90,20 +90,30 @@ client.SetCallbacks(
     [](MQTTAsync_token token) { std::cout << "delivered " << token << "\n"; });
 
 PMPC::AsyncConnectOptions opt(
-    [](MQTTAsync_successData*) { /* on success */ },
+    /* connect succeeded - CONNACK received, the session is up: subscribe here */
+    [&client](MQTTAsync_successData*) { client.Subscribe("my/topic/#", 1); },
     [](MQTTAsync_failureData* f) { /* on failure */ });
 
 opt.SetAutomaticReconnect(true);
 opt.SetKeepAliveInterval(30);
 
-if (client.Connect(opt) == MQTTASYNC_SUCCESS) {
-    client.Subscribe("my/topic/#", 1);
-
-    PMPC::AsyncMessage msg;
-    msg.SetQOS(1);
-    msg.SetPayload(buffer, len);
-    client.PublishMessage("my/topic", msg);
+///NOTE: Connect() returning SUCCESS only means the CONNECT command was queued -
+///the handshake has not finished yet. Subscribing right after Connect() returns
+///MQTTASYNC_DISCONNECTED (the subscription is silently lost if the return code
+///is ignored). Subscribe from the onSuccess callback, or from the SetConnected
+///callback - which also covers automatic reconnects
+if (client.Connect(opt) != MQTTASYNC_SUCCESS) {
+    /* synchronous failure: bad options, connect already in flight, ... */
 }
+```
+
+Publishing can start once the connection is established (e.g. from the `onSuccess` callback above, or after `SetConnected` has fired):
+
+```cpp
+PMPC::AsyncMessage msg;
+msg.SetQOS(1);
+msg.SetPayload(buffer, len);
+client.PublishMessage("my/topic", msg);
 ```
 
 See [`test/main.cpp`](test/main.cpp) for a complete interactive example (connect / disconnect / subscribe / publish console loop).
