@@ -38,9 +38,13 @@ int main()
 		std::cout << "CbDeliveryComplete: " << token << std::endl;
 	});
 
-	test.SetConnected([](char* cause)
+	test.SetConnected([&test](char* cause)
 	{
-		std::cout << "SetConnected: " << cause << std::endl;
+		std::cout << "SetConnected: " << (const char*)(cause ? cause : "") << std::endl;
+
+		///subscribe here: SetConnected fires on every successful connection,
+		///including automatic reconnects (onSuccess below fires only once)
+		test.Subscribe("testtopic/#", 2, PMPC::AsyncResponseOptions());
 	});
 
 	test.SetDisconnected([](MQTTProperties* properties, MQTTReasonCodes reasonCode)
@@ -48,10 +52,9 @@ int main()
 		std::cout << "SetDisconnected: " << reasonCode << std::endl;
 	});
 
-	PMPC::AsyncConnectOptions opt([&](MQTTAsync_successData* response)
+	PMPC::AsyncConnectOptions opt([](MQTTAsync_successData* response)
 	{
 		std::cout << "onSuccess: " << response->token << std::endl;
-		test.Subscribe("testtopic/#", 2, PMPC::AsyncResponseOptions());
 	}, [](MQTTAsync_failureData* response)
 	{
 		std::cout << "onFailure: " << response->message << std::endl;

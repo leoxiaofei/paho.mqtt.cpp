@@ -89,24 +89,29 @@ client.SetCallbacks(
     /* 消息投递完成 */
     [](MQTTAsync_token token) { std::cout << "delivered " << token << "\n"; });
 
+/* 每次"连接成功"都会触发--首次连接以及之后的每次自动重连，
+   所以在这里（重新）订阅。AsyncConnectOptions 的 onSuccess 回调
+   只在首次连接请求时触发一次，覆盖不到自动重连 */
+client.SetConnected([&client](char*) {
+    client.Subscribe("my/topic/#", 1);
+});
+
 PMPC::AsyncConnectOptions opt(
-    /* 连接成功 -- 已收到 CONNACK，会话已建立：在这里订阅 */
-    [&client](MQTTAsync_successData*) { client.Subscribe("my/topic/#", 1); },
-    [](MQTTAsync_failureData* f) { /* 失败 */ });
+    [](MQTTAsync_successData*) {},
+    [](MQTTAsync_failureData* f) { /* 首次连接失败 */ });
 
 opt.SetAutomaticReconnect(true);
 opt.SetKeepAliveInterval(30);
 
 ///注意：Connect() 返回 SUCCESS 只表示 CONNECT 命令已入队，握手尚未完成。
 ///紧跟着调用 Subscribe() 会返回 MQTTASYNC_DISCONNECTED（若忽略返回值，
-///订阅会被静默丢弃）。应在 onSuccess 回调中订阅，或使用 SetConnected
-///回调--它还能覆盖自动重连后的重新订阅
+///订阅会被静默丢弃）
 if (client.Connect(opt) != MQTTASYNC_SUCCESS) {
     /* 同步失败：参数非法、已有连接流程在进行中…… */
 }
 ```
 
-连接建立后（例如在上面 onSuccess 回调里，或 SetConnected 触发后）即可发布：
+连接建立后（例如在 SetConnected 回调里，或确认连接已建立后）即可发布：
 
 ```cpp
 PMPC::AsyncMessage msg;

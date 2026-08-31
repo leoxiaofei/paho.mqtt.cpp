@@ -89,10 +89,16 @@ client.SetCallbacks(
     /* delivery complete */
     [](MQTTAsync_token token) { std::cout << "delivered " << token << "\n"; });
 
+/* fires on EVERY successful connection - the initial one and each automatic
+   reconnect - so it is the right place to (re)subscribe. The onSuccess callback
+   in AsyncConnectOptions fires only once, for the initial connect attempt */
+client.SetConnected([&client](char*) {
+    client.Subscribe("my/topic/#", 1);
+});
+
 PMPC::AsyncConnectOptions opt(
-    /* connect succeeded - CONNACK received, the session is up: subscribe here */
-    [&client](MQTTAsync_successData*) { client.Subscribe("my/topic/#", 1); },
-    [](MQTTAsync_failureData* f) { /* on failure */ });
+    [](MQTTAsync_successData*) {},
+    [](MQTTAsync_failureData* f) { /* initial connect attempt failed */ });
 
 opt.SetAutomaticReconnect(true);
 opt.SetKeepAliveInterval(30);
@@ -100,14 +106,13 @@ opt.SetKeepAliveInterval(30);
 ///NOTE: Connect() returning SUCCESS only means the CONNECT command was queued -
 ///the handshake has not finished yet. Subscribing right after Connect() returns
 ///MQTTASYNC_DISCONNECTED (the subscription is silently lost if the return code
-///is ignored). Subscribe from the onSuccess callback, or from the SetConnected
-///callback - which also covers automatic reconnects
+///is ignored)
 if (client.Connect(opt) != MQTTASYNC_SUCCESS) {
     /* synchronous failure: bad options, connect already in flight, ... */
 }
 ```
 
-Publishing can start once the connection is established (e.g. from the `onSuccess` callback above, or after `SetConnected` has fired):
+Publishing can start once the connection is established (e.g. after `SetConnected` has fired):
 
 ```cpp
 PMPC::AsyncMessage msg;
