@@ -6,6 +6,7 @@
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <vector>
 
 
 namespace PMPC				///Paho - MQTT CPP Cient
@@ -74,11 +75,15 @@ namespace PMPC				///Paho - MQTT CPP Cient
 	public:
 		virtual ~AsRespAptBase() = default;
 
-		void SetAutoRelease(bool autoRelease)
+		void SetAutoRelease(bool enable)
 		{
-			this->autoRelease = autoRelease;
+			autoRelease = enable;
 		}
 
+		///called from paho callbacks: self-delete only for one-shot commands
+		///(subscribe/publish/disconnect responses). Connect adapters disable
+		///autoRelease - paho retains them in the client and re-invokes them
+		///from automaticReconnect retries (see AsyncConnectOptions).
 		void Release()
 		{
 			if (autoRelease)
@@ -320,33 +325,27 @@ namespace PMPC				///Paho - MQTT CPP Cient
 
 	///note: SetUserPass/SetSSL/SetWill store raw pointers held by paho for the whole
 	///connection (also reused by automaticReconnect) - the objects must outlive the client.
-	///options with callbacks are one-shot: never resubmit after a successful submit
+	///connect callbacks are also retained by paho for the whole connection and re-invoked
+	///on every automaticReconnect retry: they must only reference long-lived state.
+	///after a successful submit the adapter is owned by MQPPAsync (freed in ~MQPPAsync)
 	class AsyncConnectOptions
 	{
 		MQTTAsync_connectOptions m_self;
-		mutable AsRespAptBase* m_asRespApt;
+		mutable std::unique_ptr<AsRespAptBase> m_asRespApt;
 
 	public:
 		AsyncConnectOptions(CbOnSuccess&& cbOnSuccess, CbOnFailure&& cbOnFailure)
 			: m_self(MQTTAsync_connectOptions_initializer)
 			, m_asRespApt(AsRespApt::Attach(m_self, std::move(cbOnSuccess), std::move(cbOnFailure)))
 		{
+			keepAdapterForReconnects();
 		}
 
 		AsyncConnectOptions(CbOnSuccess5&& cbOnSuccess, CbOnFailure5&& cbOnFailure)
 			: m_self(MQTTAsync_connectOptions_initializer5)
 			, m_asRespApt(AsRespApt5::Attach(m_self, std::move(cbOnSuccess), std::move(cbOnFailure)))
 		{
-		}
-
-		~AsyncConnectOptions()
-		{
-			///non-null = ownership still local (never submitted or submit failed synchronously): reclaim here;
-			///after Detach (success/COMMAND_IGNORED) paho owns the adapter, self-deleted in the callback
-			if (m_asRespApt)
-			{
-				m_asRespApt->Release();
-			}
+			keepAdapterForReconnects();
 		}
 
 		AsyncConnectOptions(const AsyncConnectOptions&) = delete;
@@ -405,13 +404,25 @@ namespace PMPC				///Paho - MQTT CPP Cient
 			m_self.will = will;
 		}
 
-		///internal, used by MQPPAsync: after a successful submit the adapter is owned by paho
-		///(self-deleted in the callback); null out so the destructor will not delete it.
-		///not called on synchronous submit failure: ownership stays local, reclaimed by the
+		///internal, used by MQPPAsync: transfers ownership of the adapter out (the
+		///source is left null, so the destructor will not free it). not called on
+		///synchronous submit failure: ownership stays local, reclaimed by the
 		///destructor, and the same object may be submitted again
-		void Detach() const
+		std::unique_ptr<AsRespAptBase> Detach() const
 		{
-			m_asRespApt = nullptr;
+			return std::move(m_asRespApt);
+		}
+
+	private:
+		///paho stores the connect callbacks in the client and re-invokes them on every
+		///automaticReconnect retry (and on a retry that eventually succeeds), so the
+		///adapter must not self-delete after the first callback - MQPPAsync owns it
+		void keepAdapterForReconnects()
+		{
+			if (m_asRespApt)
+			{
+				m_asRespApt->SetAutoRelease(false);
+			}
 		}
 	};
 
@@ -419,11 +430,10 @@ namespace PMPC				///Paho - MQTT CPP Cient
 	class AsyncDisconnectOptions
 	{
 		MQTTAsync_disconnectOptions m_self;
-		mutable AsRespAptBase* m_asRespApt;
+		mutable std::unique_ptr<AsRespAptBase> m_asRespApt;
 	public:
 		AsyncDisconnectOptions()
 			: m_self(MQTTAsync_disconnectOptions_initializer)
-			, m_asRespApt(nullptr)
 		{
 		}
 
@@ -439,15 +449,6 @@ namespace PMPC				///Paho - MQTT CPP Cient
 		{
 		}
 
-		~AsyncDisconnectOptions()
-		{
-			///non-null = ownership still local (never submitted or submit failed synchronously): reclaim here
-			if (m_asRespApt)
-			{
-				m_asRespApt->Release();
-			}
-		}
-
 		AsyncDisconnectOptions(const AsyncDisconnectOptions&) = delete;
 		AsyncDisconnectOptions& operator=(const AsyncDisconnectOptions&) = delete;
 
@@ -457,12 +458,12 @@ namespace PMPC				///Paho - MQTT CPP Cient
 		}
 
 		///internal, used by MQPPAsync: after a successful submit the adapter is owned by paho
-		///(self-deleted in the callback); null out so the destructor will not delete it.
-		///not called on synchronous submit failure: ownership stays local, reclaimed by the
-		///destructor, and the same object may be submitted again
+		///(self-deleted in the callback); release without deleting. not called on synchronous
+		///submit failure: ownership stays local, reclaimed by the destructor, and the same
+		///object may be submitted again
 		void Detach() const
 		{
-			m_asRespApt = nullptr;
+			m_asRespApt.release();
 		}
 	};
 
@@ -471,12 +472,11 @@ namespace PMPC				///Paho - MQTT CPP Cient
 	{
 	private:
 		MQTTAsync_responseOptions m_self;
-		mutable AsRespAptBase* m_asRespApt;
+		mutable std::unique_ptr<AsRespAptBase> m_asRespApt;
 
 	public:
 		AsyncResponseOptions()
 			: m_self(MQTTAsync_responseOptions_initializer)
-			, m_asRespApt(nullptr)
 		{
 
 		}
@@ -493,15 +493,6 @@ namespace PMPC				///Paho - MQTT CPP Cient
 		{
 		}
 
-		~AsyncResponseOptions()
-		{
-			///non-null = ownership still local (never submitted or submit failed synchronously): reclaim here
-			if (m_asRespApt)
-			{
-				m_asRespApt->Release();
-			}
-		}
-
 		AsyncResponseOptions(const AsyncResponseOptions&) = delete;
 		AsyncResponseOptions& operator=(const AsyncResponseOptions&) = delete;
 
@@ -516,12 +507,12 @@ namespace PMPC				///Paho - MQTT CPP Cient
 		}
 
 		///internal, used by MQPPAsync: after a successful submit the adapter is owned by paho
-		///(self-deleted in the callback); null out so the destructor will not delete it.
-		///not called on synchronous submit failure: ownership stays local, reclaimed by the
-		///destructor, and the same object may be submitted again
+		///(self-deleted in the callback); release without deleting. not called on synchronous
+		///submit failure: ownership stays local, reclaimed by the destructor, and the same
+		///object may be submitted again
 		void Detach() const
 		{
-			m_asRespApt = nullptr;
+			m_asRespApt.release();
 		}
 	};
 
@@ -599,6 +590,14 @@ namespace PMPC				///Paho - MQTT CPP Cient
 		CbBeforeWrite m_cbBeforeWrite;
 		CbAfterRead m_cbAfterRead;
 
+		///connect callback adapters taken over from AsyncConnectOptions. paho retains
+		///the connect callbacks in the client and re-invokes them on every
+		///automaticReconnect retry, so they must outlive every submitted options
+		///object. Old adapters are NOT dropped on a new Connect: paho may still be
+		///holding their pointers (previous in-flight/retrying connect), so one is
+		///kept per submitted options object.
+		std::vector<std::unique_ptr<AsRespAptBase>> m_connApts;
+
 	public:
 		MQPPAsync(const char* serverURI, const char* clientId, PersistenceType persistence_type = PT_PERSISTENCE_NONE, void* persistence_context = nullptr, MQTTAsync_createOptions* options = nullptr)
 			: m_self(nullptr)
@@ -609,6 +608,9 @@ namespace PMPC				///Paho - MQTT CPP Cient
 
 		~MQPPAsync()
 		{
+			///members (callbacks, m_connApts) are destroyed after this body, which is
+			///required: destroy removes the client under mqttasync_mutex, so no paho
+			///thread can be inside - or start - one of our callbacks afterwards
 			MQTTAsync_destroy(&m_self);
 		}
 
@@ -794,16 +796,17 @@ namespace PMPC				///Paho - MQTT CPP Cient
 			int ret = MQTTAsync_connect(m_self, options);
 			if (ret == MQTTASYNC_SUCCESS)
 			{
-				///success: adapter owned by paho, self-deleted in the callback
-				///(connect callbacks fire exactly once)
-				options.Detach();
+				///success: paho copied the callbacks into the queued command; keep the
+				///adapter for this client's lifetime - automaticReconnect re-invokes the
+				///connect callbacks on every retry, they are not one-shot
+				m_connApts.emplace_back(options.Detach());
 			}
 			else if (ret == MQTTASYNC_COMMAND_IGNORED)
 			{
 				///duplicate queued CONNECT ignored, but paho already copied the callbacks into
 				///m->connect (before the dedup) - the in-flight connection's completion takes
-				///over, so detach as well (deleting locally here would UAF on completion)
-				options.Detach();
+				///over, so the adapter must also outlive this options object
+				m_connApts.emplace_back(options.Detach());
 			}
 			///other synchronous failures: paho did not take the adapter, ownership stays in
 			///options and is reclaimed by its destructor (same object may be submitted again)
